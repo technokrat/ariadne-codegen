@@ -573,7 +573,59 @@ def test_add_method_generates_async_generator_for_subscription_definition(
 
     class_def = get_class_def(module)
     assert class_def
-    assert compare_ast(class_def.body[0], expected_method_def)
+    method_def = class_def.body[0]
+    assert compare_ast(method_def, expected_method_def)
+
+
+def test_add_method_generates_async_iterator_for_incremental_operation(
+    async_base_client_import,
+):
+    schema_str = """
+    schema { query: Query }
+    type Query { xyz: TestType }
+    type TestType {
+        id: ID!
+        name: String!
+    }
+    """
+    query_str = """
+    query ListXyz {
+        xyz {
+            id
+            ... on TestType @defer {
+                name
+            }
+        }
+    }
+    """
+    generator = ClientGenerator(
+        base_client_import=async_base_client_import,
+        arguments_generator=ArgumentsGenerator(schema=build_schema(schema_str)),
+    )
+
+    generator.add_method(
+        definition=cast(OperationDefinitionNode, parse(query_str).definitions[0]),
+        name="list_xyz",
+        return_type="ListXyz",
+        return_type_module="list_xyz",
+        operation_str=query_str,
+        async_=True,
+        incremental=True,
+    )
+    module = generator.generate()
+
+    class_def = get_class_def(module)
+    assert class_def
+    method_def = class_def.body[0]
+    assert isinstance(method_def, ast.AsyncFunctionDef)
+    assert compare_ast(
+        method_def.returns,
+        ast.Subscript(value=ast.Name(id="AsyncIterator"), slice=ast.Name(id="ListXyz")),
+    )
+    assert isinstance(method_def.body[2], ast.AsyncFor)
+    assert isinstance(method_def.body[2].iter, ast.Call)
+    assert isinstance(method_def.body[2].iter.func, ast.Attribute)
+    assert method_def.body[2].iter.func.attr == "execute_incremental"
 
 
 def test_add_method_raises_not_supported_for_not_async_subscription(base_client_import):

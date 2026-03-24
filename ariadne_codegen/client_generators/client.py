@@ -164,6 +164,7 @@ class ClientGenerator:
         return_type_module: str,
         operation_str: str,
         async_: bool = True,
+        incremental: bool = False,
     ):
         """Add method to client."""
         arguments, arguments_dict = self.arguments_generator.generate(
@@ -190,15 +191,26 @@ class ClientGenerator:
                 )
             )
         elif async_:
-            method_def = self._generate_async_method(
-                name=name,
-                return_type=return_type,
-                arguments=arguments,
-                arguments_dict=arguments_dict,
-                operation_str=operation_str,
-                operation_name=operation_name,
-                variable_names=variable_names,
-            )
+            if incremental:
+                method_def = self._generate_incremental_async_method(
+                    name=name,
+                    return_type=return_type,
+                    arguments=arguments,
+                    arguments_dict=arguments_dict,
+                    operation_str=operation_str,
+                    operation_name=operation_name,
+                    variable_names=variable_names,
+                )
+            else:
+                method_def = self._generate_async_method(
+                    name=name,
+                    return_type=return_type,
+                    arguments=arguments,
+                    arguments_dict=arguments_dict,
+                    operation_str=operation_str,
+                    operation_name=operation_name,
+                    variable_names=variable_names,
+                )
         else:
             method_def = self._generate_method(
                 name=name,
@@ -871,6 +883,31 @@ class ClientGenerator:
             ],
         )
 
+    def _generate_incremental_async_method(
+        self,
+        name: str,
+        return_type: str,
+        arguments: ast.arguments,
+        arguments_dict: ast.Dict,
+        operation_str: str,
+        operation_name: str,
+        variable_names: dict[str, str],
+    ) -> ast.AsyncFunctionDef:
+        return generate_async_method_definition(
+            name=name,
+            arguments=arguments,
+            return_type=generate_subscript(
+                value=generate_name(ASYNC_ITERATOR), slice_=generate_name(return_type)
+            ),
+            body=[
+                self._generate_operation_str_assign(variable_names, operation_str, 1),
+                self._generate_variables_assign(variable_names, arguments_dict, 2),
+                self._generate_incremental_async_generator_loop(
+                    variable_names, operation_name, return_type, 3
+                ),
+            ],
+        )
+
     def _generate_method(
         self,
         name: str,
@@ -997,6 +1034,42 @@ class ClientGenerator:
             target=generate_name(variable_names[self._data_variable]),
             iter_=generate_call(
                 func=generate_attribute(value=generate_name("self"), attr="execute_ws"),
+                keywords=[
+                    generate_keyword(
+                        value=generate_name(
+                            variable_names[self._operation_str_variable]
+                        ),
+                        arg="query",
+                    ),
+                    generate_keyword(
+                        value=generate_constant(operation_name), arg="operation_name"
+                    ),
+                    generate_keyword(
+                        value=generate_name(
+                            variable_names[self._variables_dict_variable]
+                        ),
+                        arg="variables",
+                    ),
+                    generate_keyword(value=generate_name(KWARGS_NAMES)),
+                ],
+            ),
+            body=[self._generate_yield_parsed_obj(variable_names, return_type)],
+            lineno=lineno,
+        )
+
+    def _generate_incremental_async_generator_loop(
+        self,
+        variable_names: dict[str, str],
+        operation_name: str,
+        return_type: str,
+        lineno: int = 1,
+    ) -> ast.AsyncFor:
+        return generate_async_for(
+            target=generate_name(variable_names[self._data_variable]),
+            iter_=generate_call(
+                func=generate_attribute(
+                    value=generate_name("self"), attr="execute_incremental"
+                ),
                 keywords=[
                     generate_keyword(
                         value=generate_name(

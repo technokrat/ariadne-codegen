@@ -36,6 +36,7 @@ from ..exceptions import ParsingError
 from .constants import (
     ANNOTATED,
     ANY,
+    DEFER_DIRECTIVE_NAME,
     DISCRIMINATOR_KEYWORD,
     INCLUDE_DIRECTIVE_NAME,
     LITERAL,
@@ -404,7 +405,11 @@ def annotate_nested_unions(
 def parse_directives(
     annotation: Annotation, directives: tuple[DirectiveNode, ...]
 ) -> tuple[Annotation, Optional[ast.Constant]]:
-    nullable_directives = (INCLUDE_DIRECTIVE_NAME, SKIP_DIRECTIVE_NAME)
+    nullable_directives = (
+        DEFER_DIRECTIVE_NAME,
+        INCLUDE_DIRECTIVE_NAME,
+        SKIP_DIRECTIVE_NAME,
+    )
     directives_names = [d.name.value for d in directives]
 
     if any(n in nullable_directives for n in directives_names):

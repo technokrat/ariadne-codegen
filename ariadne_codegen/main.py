@@ -12,6 +12,7 @@ from .graphql_schema_generators.schema import (
 from .plugins.explorer import get_plugins_types
 from .plugins.manager import PluginManager
 from .schema import (
+    add_incremental_delivery_directives_to_schema,
     add_mixin_directive_to_schema,
     filter_fragments_definitions,
     filter_operations_definitions,
@@ -60,6 +61,7 @@ def client(config_dict):
         plugins_types=get_plugins_types(settings.plugins),
     )
     schema = add_mixin_directive_to_schema(schema)
+    schema = add_incremental_delivery_directives_to_schema(schema)
     schema = plugin_manager.process_schema(schema)
     assert_valid_schema(schema)
 

@@ -537,6 +537,42 @@ def test_get_graphql_queries_with_fragment_returns_schema_definitions(
     assert len(queries) == 3
 
 
+def test_get_graphql_queries_accepts_defer_and_stream_directives(tmp_path):
+    query_file = tmp_path / "query.graphql"
+    query_file.write_text(
+        """
+        query testQuery {
+            test {
+                node
+                ... on Custom @defer {
+                    default
+                }
+            }
+            testList @stream(initialCount: 1)
+        }
+        """,
+        encoding="utf-8",
+    )
+    schema = build_schema(
+        """
+        type Query {
+            test: Custom
+            testList: [String!]!
+        }
+
+        type Custom {
+            node: String
+            default: String
+        }
+        """
+    )
+
+    queries = get_graphql_queries(query_file.as_posix(), schema)
+
+    assert len(queries) == 1
+    assert isinstance(queries[0], OperationDefinitionNode)
+
+
 def test_get_graphql_queries_with_duplicate_fragment_raises_invalid_operation(
     single_file_query_with_duplicate_fragment, schema_str
 ):

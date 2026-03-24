@@ -19,6 +19,7 @@ It can also be run as `python -m ariadne_codegen`.
 - Generate pydantic models from schema types, inputs and enums.
 - Generate pydantic models for GraphQL results.
 - Generate client package with each GraphQL operation available as async method.
+- Accept `@defer` and `@stream` directives during validation and generation.
 
 ## Installation
 
@@ -225,6 +226,54 @@ client = Client(http_client=CustomComplexHttpClient())
 ```
 
 `CustomComplexHttpClient` needs to be an instance of `httpx.AsyncClient` for async client, or `httpx.Client` for sync.
+
+### Incremental delivery directives
+
+`@defer` and `@stream` are used in the generated client by writing them in your GraphQL operations.
+
+For generated async clients, operations that contain incremental delivery directives return async iterators of typed result snapshots.
+
+Example:
+
+```graphql
+query GetProducts {
+    products {
+        id
+        ...ProductDetails @defer
+        reviews @stream(initialCount: 2) {
+            id
+            text
+        }
+    }
+}
+
+fragment ProductDetails on Product {
+    description
+}
+```
+
+Generated async client usage:
+
+```python
+async for result in client.get_products():
+        print(result)
+```
+
+The generated operation string keeps these directives, so they are sent to the server as part of the GraphQL document. The async client yields the initial result first, then yields updated snapshots as deferred fields or streamed items arrive.
+
+Current behavior:
+
+- Code generation accepts both directives even if they are not declared in the schema.
+- Deferred fields are generated as optional result fields, because they may not be present in the initial payload.
+- Async generated client methods for operations using `@defer` or `@stream` return `AsyncIterator[ResultType]`.
+- Async base clients consume both regular JSON responses and incremental `multipart/mixed` responses.
+- Streamed fields keep their normal field type, because `@stream` changes delivery timing of list items rather than the declared GraphQL field shape.
+
+Current limitation:
+
+- Sync generated clients still expect the regular GraphQL JSON response shape. Incremental delivery transport support is currently implemented for async generated clients only.
+
+If you need incremental delivery with the sync client variant, use a custom base client or custom transport that understands your server's incremental response format.
 
 ### Websockets
 

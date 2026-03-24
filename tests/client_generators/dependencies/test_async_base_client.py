@@ -20,6 +20,38 @@ from ariadne_codegen.client_generators.dependencies.exceptions import (
 from ...utils import decode_multipart_request
 from .conftest import _MockWebSocket, _ws_message
 
+class _MockAsyncResponse:
+    def __init__(
+        self,
+        body: bytes,
+        content_type: str = "application/json",
+        status_code: int = 200,
+        chunks: Optional[list[bytes]] = None,
+    ) -> None:
+        self._body = body
+        self.headers = {"content-type": content_type}
+        self.status_code = status_code
+        self.is_success = 200 <= status_code < 300
+        self._chunks = chunks if chunks is not None else [body]
+
+    async def aread(self) -> bytes:
+        return self._body
+
+    async def aiter_bytes(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _MockAsyncStreamContext:
+    def __init__(self, response: _MockAsyncResponse) -> None:
+        self.response = response
+
+    async def __aenter__(self) -> _MockAsyncResponse:
+        return self.response
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_execute_sends_post_to_correct_url_with_correct_payload(httpx_mock):
@@ -667,7 +699,6 @@ async def test_execute_ws_raises_when_connection_ack_not_received_within_timeout
     mocker,
 ):
     """If server never sends connection_ack, client raises after 5 seconds."""
-    # Only send pings so connection_ack is never received
     ping = _ws_message("ping")
     mock_ws = _MockWebSocket([ping, ping, ping])
 
@@ -687,6 +718,9 @@ async def test_execute_ws_raises_when_connection_ack_not_received_within_timeout
     )
 
     async def fake_wait_for(aw: Any, timeout: Optional[float] = None) -> Any:
+        close = getattr(aw, "close", None)
+        if callable(close):
+            close()
         raise asyncio.TimeoutError("timed out")
 
     mocker.patch(
@@ -700,3 +734,109 @@ async def test_execute_ws_raises_when_connection_ack_not_received_within_timeout
             pass
 
     assert "Connection ack not received" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_execute_incremental_yields_single_snapshot_for_json_response(mocker):
+    body = json.dumps({"data": {"hello": "world"}}).encode("utf-8")
+    response = _MockAsyncResponse(body=body)
+    http_client = mocker.MagicMock()
+    http_client.stream.return_value = _MockAsyncStreamContext(response)
+    client = AsyncBaseClient(url="http://base_url", http_client=http_client)
+
+    result = [
+        data
+        async for data in client.execute_incremental(
+            "query GetHello { hello }", operation_name="GetHello"
+        )
+    ]
+
+    assert result == [{"hello": "world"}]
+    assert (
+        http_client.stream.call_args.kwargs["headers"]["Accept"]
+        == "multipart/mixed; incrementalSpec=v0.2, application/json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_incremental_merges_deferred_patches(mocker):
+    chunks = [
+        (
+            b'--graphql\r\nContent-Type: application/json\r\n\r\n'
+            b'{"data":{"article":{"id":"1","title":"Hello"}},"hasNext":true}\r\n'
+        ),
+        (
+            b'--graphql\r\nContent-Type: application/json\r\n\r\n'
+            b'{"incremental":[{"data":{"author":{"name":"Jane"}},"path":["article"]}],"hasNext":false}\r\n'
+            b'--graphql--\r\n'
+        ),
+    ]
+    response = _MockAsyncResponse(
+        body=b"".join(chunks),
+        content_type='multipart/mixed; boundary="graphql"',
+        chunks=chunks,
+    )
+    http_client = mocker.MagicMock()
+    http_client.stream.return_value = _MockAsyncStreamContext(response)
+    client = AsyncBaseClient(url="http://base_url", http_client=http_client)
+
+    result = [
+        data
+        async for data in client.execute_incremental(
+            "query GetArticle { article { id title ...Author @defer } }"
+        )
+    ]
+
+    assert result == [
+        {"article": {"id": "1", "title": "Hello"}},
+        {
+            "article": {
+                "id": "1",
+                "title": "Hello",
+                "author": {"name": "Jane"},
+            }
+        },
+    ]
+
+@pytest.mark.asyncio
+async def test_execute_incremental_merges_streamed_items(mocker):
+    body = b"".join(
+        [
+            (
+                b'--graphql\r\nContent-Type: application/json\r\n\r\n'
+                b'{"data":{"blogPost":{"comments":[{"id":"comment-1"}]}},"hasNext":true}\r\n'
+            ),
+            (
+                b'--graphql\r\nContent-Type: application/json\r\n\r\n'
+                b'{"incremental":[{"items":[{"id":"comment-2"},{"id":"comment-3"}],"path":["blogPost","comments",1]}],"hasNext":false}\r\n'
+                b'--graphql--\r\n'
+            ),
+        ]
+    )
+    response = _MockAsyncResponse(
+        body=body,
+        content_type='multipart/mixed; boundary="graphql"',
+    )
+    http_client = mocker.MagicMock()
+    http_client.stream.return_value = _MockAsyncStreamContext(response)
+    client = AsyncBaseClient(url="http://base_url", http_client=http_client)
+
+    result = [
+        data
+        async for data in client.execute_incremental(
+            "query GetBlogPost { blogPost { comments @stream(initialCount: 1) { id } } }"
+        )
+    ]
+
+    assert result == [
+        {"blogPost": {"comments": [{"id": "comment-1"}]}},
+        {
+            "blogPost": {
+                "comments": [
+                    {"id": "comment-1"},
+                    {"id": "comment-2"},
+                    {"id": "comment-3"},
+                ]
+            }
+        },
+    ]

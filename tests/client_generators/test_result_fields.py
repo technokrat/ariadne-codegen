@@ -29,6 +29,7 @@ from graphql import (
 
 from ariadne_codegen.client_generators.constants import (
     ANNOTATED,
+    DEFER_DIRECTIVE_NAME,
     DISCRIMINATOR_KEYWORD,
     FIELD_CLASS,
     INCLUDE_DIRECTIVE_NAME,
@@ -64,6 +65,16 @@ from ..utils import compare_ast
 @pytest.mark.parametrize(
     "directive, type_, expected_annotation",
     [
+        (
+            DEFER_DIRECTIVE_NAME,
+            GraphQLNonNull(GraphQLString),
+            ast.Subscript(value=ast.Name(id=OPTIONAL), slice=ast.Name(id="str")),
+        ),
+        (
+            DEFER_DIRECTIVE_NAME,
+            GraphQLString,
+            ast.Subscript(value=ast.Name(id=OPTIONAL), slice=ast.Name(id="str")),
+        ),
         (
             INCLUDE_DIRECTIVE_NAME,
             GraphQLNonNull(GraphQLString),

@@ -2,10 +2,16 @@ import ast
 from typing import cast
 
 import pytest
-from graphql import OperationDefinitionNode, build_ast_schema, parse
+from graphql import (
+    FragmentDefinitionNode,
+    OperationDefinitionNode,
+    build_ast_schema,
+    parse,
+)
 
 from ariadne_codegen.client_generators.constants import (
     BASE_MODEL_CLASS_NAME,
+    DEFER_DIRECTIVE_NAME,
     FIELD_CLASS,
     INCLUDE_DIRECTIVE_NAME,
     MIXIN_FROM_NAME,
@@ -134,6 +140,94 @@ def test_generate_handles_multiple_mixin_directives_on_one_field():
         import_def_xyz,
         ast.ImportFrom(module=".xyz", names=[ast.alias(name="MixinXyz")], level=0),
     )
+
+
+def test_generator_returns_optional_field_for_deferred_inline_fragment():
+    query_str = f"""
+    query CustomQuery {{
+        query1(id: \"1\") {{
+            id
+            ... on CustomType @{DEFER_DIRECTIVE_NAME} {{
+                field1 {{
+                    fielda
+                }}
+            }}
+        }}
+    }}
+    """
+    expected_field_def = ast.AnnAssign(
+        target=ast.Name(id="field1"),
+        annotation=ast.Subscript(
+            value=ast.Name(id=OPTIONAL),
+            slice=ast.Name(id='"CustomQueryQuery1Field1"'),
+        ),
+        value=ast.Constant(value=None),
+        simple=1,
+    )
+
+    generator = ResultTypesGenerator(
+        schema=build_ast_schema(parse(SCHEMA_STR)),
+        operation_definition=cast(
+            OperationDefinitionNode, parse(query_str).definitions[0]
+        ),
+        enums_module_name="enums",
+        convert_to_snake_case=False,
+    )
+
+    module = generator.generate()
+
+    class_def = get_class_def(module, 1)
+    assert class_def is not None
+    assert class_def.name == "CustomQueryQuery1"
+    assert compare_ast(class_def.body[1], expected_field_def)
+
+
+def test_generator_returns_optional_field_for_deferred_fragment_spread():
+    query_str = f"""
+    query CustomQuery {{
+        query1(id: \"1\") {{
+            id
+            ...DeferredField @{DEFER_DIRECTIVE_NAME}
+        }}
+    }}
+    """
+    deferred_fragment = """
+    fragment DeferredField on CustomType {
+        field1 {
+            fielda
+        }
+    }
+    """
+    expected_field_def = ast.AnnAssign(
+        target=ast.Name(id="field1"),
+        annotation=ast.Subscript(
+            value=ast.Name(id=OPTIONAL),
+            slice=ast.Name(id='"CustomQueryQuery1Field1"'),
+        ),
+        value=ast.Constant(value=None),
+        simple=1,
+    )
+
+    generator = ResultTypesGenerator(
+        schema=build_ast_schema(parse(SCHEMA_STR)),
+        operation_definition=cast(
+            OperationDefinitionNode, parse(query_str).definitions[0]
+        ),
+        enums_module_name="enums",
+        fragments_definitions={
+            "DeferredField": cast(
+                FragmentDefinitionNode, parse(deferred_fragment).definitions[0]
+            )
+        },
+        convert_to_snake_case=False,
+    )
+
+    module = generator.generate()
+
+    class_def = get_class_def(module, 1)
+    assert class_def is not None
+    assert class_def.name == "CustomQueryQuery1"
+    assert compare_ast(class_def.body[1], expected_field_def)
 
 
 @pytest.mark.parametrize(

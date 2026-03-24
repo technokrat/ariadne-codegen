@@ -9,7 +9,9 @@ from graphql import (
     DirectiveLocation,
     FragmentDefinitionNode,
     GraphQLArgument,
+    GraphQLBoolean,
     GraphQLDirective,
+    GraphQLInt,
     GraphQLSchema,
     GraphQLString,
     GraphQLSyntaxError,
@@ -25,7 +27,15 @@ from graphql import (
 )
 from typing_extensions import Any
 
-from .client_generators.constants import MIXIN_FROM_NAME, MIXIN_IMPORT_NAME, MIXIN_NAME
+from .client_generators.constants import (
+    DEFER_DIRECTIVE_NAME,
+    INCLUDE_DIRECTIVE_NAME,
+    MIXIN_FROM_NAME,
+    MIXIN_IMPORT_NAME,
+    MIXIN_NAME,
+    SKIP_DIRECTIVE_NAME,
+    STREAM_DIRECTIVE_NAME,
+)
 from .exceptions import (
     IntrospectionError,
     InvalidGraphqlSyntax,
@@ -56,6 +66,7 @@ def get_graphql_queries(
     """Get graphql queries definitions build from provided path."""
     queries_str = load_graphql_files_from_path(Path(queries_path))
     queries_ast = parse(queries_str)
+    schema = add_incremental_delivery_directives_to_schema(schema)
     validation_errors = validate(
         schema=schema,
         document_ast=queries_ast,
@@ -186,4 +197,53 @@ def add_mixin_directive_to_schema(schema: GraphQLSchema) -> GraphQLSchema:
             is_repeatable=True,
         ),
     )
+    return schema
+
+
+def add_incremental_delivery_directives_to_schema(
+    schema: GraphQLSchema,
+) -> GraphQLSchema:
+    existing_directive_names = {directive.name for directive in schema.directives}
+    directives: list[GraphQLDirective] = []
+
+    if DEFER_DIRECTIVE_NAME not in existing_directive_names:
+        directives.append(
+            GraphQLDirective(
+                name=DEFER_DIRECTIVE_NAME,
+                description=(
+                    "Directs the executor to defer this field or fragment when the "
+                    "`if` argument is true."
+                ),
+                locations=[
+                    DirectiveLocation.FIELD,
+                    DirectiveLocation.FRAGMENT_SPREAD,
+                    DirectiveLocation.INLINE_FRAGMENT,
+                ],
+                args={
+                    "if": GraphQLArgument(GraphQLBoolean, default_value=True),
+                    "label": GraphQLArgument(GraphQLString),
+                },
+            )
+        )
+
+    if STREAM_DIRECTIVE_NAME not in existing_directive_names:
+        directives.append(
+            GraphQLDirective(
+                name=STREAM_DIRECTIVE_NAME,
+                description=(
+                    "Directs the executor to stream plural fields when the `if` "
+                    "argument is true."
+                ),
+                locations=[DirectiveLocation.FIELD],
+                args={
+                    "if": GraphQLArgument(GraphQLBoolean, default_value=True),
+                    "label": GraphQLArgument(GraphQLString),
+                    "initialCount": GraphQLArgument(GraphQLInt, default_value=0),
+                },
+            )
+        )
+
+    if directives:
+        schema.directives += tuple(directives)
+
     return schema

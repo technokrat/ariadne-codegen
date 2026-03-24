@@ -1,5 +1,6 @@
 import ast
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, Optional, Union, cast
 from warnings import warn
 
@@ -53,6 +54,7 @@ from .constants import (
     ANY,
     BASE_MODEL_CLASS_NAME,
     BEFORE_VALIDATOR,
+    DEFER_DIRECTIVE_NAME,
     DEFAULT_KEYWORD,
     DISCRIMINATOR_KEYWORD,
     FIELD_CLASS,
@@ -71,6 +73,12 @@ from .constants import (
 from .result_fields import FieldContext, is_union, parse_operation_field
 from .scalars import ScalarData, generate_scalar_imports
 from .types import CodegenResultFieldType
+
+
+@dataclass
+class ResolvedField:
+    node: FieldNode
+    directives: tuple[DirectiveNode, ...] = ()
 
 
 class ResultTypesGenerator:
@@ -250,10 +258,11 @@ class ResultTypesGenerator:
         class_def = generate_class_def(class_name, class_bases)
 
         extra_classes = []
-        for lineno, field in enumerate(
+        for lineno, resolved_field in enumerate(
             resolved_selection_set,
             start=1,
         ):
+            field = resolved_field.node
             field_name = self._get_field_name(field)
             name = self._process_field_name(field_name, field=field)
             field_definition = self._get_field_from_schema(type_name, field.name.value)
@@ -268,7 +277,7 @@ class ResultTypesGenerator:
                 schema=self.schema,
                 field=field,
                 type_=cast(CodegenResultFieldType, field_definition.type),
-                directives=field.directives,
+                directives=resolved_field.directives,
                 class_name=class_name + str_to_pascal_case(name),
                 typename_values=typename_values,
                 custom_scalars=self.custom_scalars,
@@ -311,20 +320,38 @@ class ResultTypesGenerator:
         return [class_def] + extra_classes
 
     def _resolve_selection_set(
-        self, selection_set: SelectionSetNode, root_type: str = ""
-    ) -> tuple[list[FieldNode], set[str]]:
-        fields = []
+        self,
+        selection_set: SelectionSetNode,
+        root_type: str = "",
+        inherited_directives: tuple[DirectiveNode, ...] = (),
+    ) -> tuple[list[ResolvedField], set[str]]:
+        fields: list[ResolvedField] = []
         fragments = set()
         for selection in selection_set.selections:
             if isinstance(selection, FieldNode):
-                fields.append(selection)
+                fields.append(
+                    ResolvedField(
+                        node=selection,
+                        directives=inherited_directives
+                        + tuple(selection.directives or ()),
+                    )
+                )
             elif isinstance(selection, FragmentSpreadNode):
                 fragment_def = self.fragments_definitions[selection.name.value]
                 root_type_def = self.schema.type_map[root_type]
                 fragment_root_type_def = self.schema.type_map[
                     fragment_def.type_condition.name.value
                 ]
-                if not self._unpack_fragment(fragment_def, root_type_def):
+                fragment_directives = inherited_directives + tuple(
+                    selection.directives or ()
+                )
+                should_unpack_fragment = self._unpack_fragment(
+                    fragment_def, root_type_def
+                ) or any(
+                    directive.name.value == DEFER_DIRECTIVE_NAME
+                    for directive in fragment_directives
+                )
+                if not should_unpack_fragment:
                     fragments.add(selection.name.value)
                 elif fragment_def.type_condition.name.value == root_type or (
                     is_abstract_type(fragment_root_type_def)
@@ -335,7 +362,7 @@ class ResultTypesGenerator:
                 ):
                     self._unpacked_fragments.add(selection.name.value)
                     sub_fields, sub_fragments = self._resolve_selection_set(
-                        fragment_def.selection_set, root_type
+                        fragment_def.selection_set, root_type, fragment_directives
                     )
                     fields.extend(sub_fields)
                     fragments = fragments.union(sub_fragments)
@@ -344,8 +371,13 @@ class ResultTypesGenerator:
                     selection.type_condition.name.value, root_type
                 )
                 if root_type_value:
+                    inline_fragment_directives = inherited_directives + tuple(
+                        selection.directives or ()
+                    )
                     sub_fields, sub_fragments = self._resolve_selection_set(
-                        selection.selection_set, root_type_value
+                        selection.selection_set,
+                        root_type_value,
+                        inline_fragment_directives,
                     )
                     fields.extend(sub_fields)
                     fragments = fragments.union(sub_fragments)
@@ -392,16 +424,34 @@ class ResultTypesGenerator:
         return False
 
     def _add_typename_field_to_selections(
-        self, resolved_fields: list[FieldNode], selection_set: SelectionSetNode
-    ) -> tuple[list[FieldNode], tuple[SelectionNode, ...]]:
+        self,
+        resolved_fields: list[ResolvedField] | list[FieldNode],
+        selection_set: SelectionSetNode,
+    ) -> tuple[list[ResolvedField] | list[FieldNode], tuple[SelectionNode, ...]]:
         if not self.include_typename:
             # Don't add __typename to fields or selections when include_typename=False
             return resolved_fields, selection_set.selections
 
-        field_names = {f.name.value for f in resolved_fields}
+        uses_resolved_fields = all(
+            isinstance(resolved_field, ResolvedField)
+            for resolved_field in resolved_fields
+        )
+        field_names = {
+            resolved_field.node.name.value
+            if isinstance(resolved_field, ResolvedField)
+            else resolved_field.name.value
+            for resolved_field in resolved_fields
+        }
         if TYPENAME_FIELD_NAME not in field_names:
             typename_field = FieldNode(name=NameNode(value=TYPENAME_FIELD_NAME))
-            return [typename_field, *resolved_fields], (
+            if uses_resolved_fields:
+                fields_with_typename: list[ResolvedField] | list[FieldNode] = [
+                    ResolvedField(node=typename_field),
+                    *resolved_fields,
+                ]
+            else:
+                fields_with_typename = [typename_field, *resolved_fields]
+            return fields_with_typename, (
                 typename_field,
                 *selection_set.selections,
             )

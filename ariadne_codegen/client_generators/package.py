@@ -28,10 +28,12 @@ from .constants import (
     BASE_MODEL_FILE_PATH,
     BASE_MODEL_IMPORT,
     BASE_OPERATION_FILE_PATH,
+    DEFER_DIRECTIVE_NAME,
     DEFAULT_ASYNC_BASE_CLIENT_OPEN_TELEMETRY_PATH,
     DEFAULT_ASYNC_BASE_CLIENT_PATH,
     DEFAULT_BASE_CLIENT_OPEN_TELEMETRY_PATH,
     DEFAULT_BASE_CLIENT_PATH,
+    STREAM_DIRECTIVE_NAME,
     EXCEPTIONS_FILE_PATH,
     GRAPHQL_CLIENT_EXCEPTIONS_NAMES,
     UNSET_IMPORT,
@@ -230,6 +232,10 @@ class PackageGenerator:
             return_type_module=module_name,
             operation_str=operation_str,
             async_=self.async_client,
+            incremental=(
+                f"@{DEFER_DIRECTIVE_NAME}" in operation_str
+                or f"@{STREAM_DIRECTIVE_NAME}" in operation_str
+            ),
         )
 
     def _include_exceptions(self):
